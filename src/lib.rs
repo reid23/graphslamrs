@@ -1,38 +1,19 @@
+#![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
+#![allow(non_snake_case)]
+include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 use pyo3::prelude::*;
 use itertools::*;
+// use std::{cmp::Ordering, process::exit};
+use finitediff::FiniteDiff;
+use nalgebra as na;
+use std::iter;
 
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-
-#[pyfunction]
-unsafe fn sparse_qr_solve(
-    n: i32, m: i32,
-    ra: Vec<i32>, ca: Vec<i32>, va: Vec<f64>,
-    b: Vec<f64>,
-) -> Vec<f64> {
-    let mut rac = ra.clone();
-    let mut cac = ca.clone();
-    let mut vac = va.clone();
-    let mut bc = b.clone();
-    let a = cs_sparse { 
-        nzmax:rac.len() as i32, 
-        m: m, 
-        n: n, 
-        p: cac.as_mut_ptr(),
-        i: rac.as_mut_ptr(),
-        x: vac.as_mut_ptr(), 
-        nz: rac.len() as i32
-    };
-    let c: *const cs = cs_triplet(&a);
-    cs_qrsol(c, bc.as_mut_ptr(), 0);
-    bc[0..(n as usize)].to_vec()
-}
-
-use core::{f64, slice};
-use std::f64::consts::PI;
+use core::f64;
 
 #[derive(Debug)]
-struct Trimat {
+pub struct Trimat {
     rows: Vec<i32>,
     cols: Vec<i32>,
     vals: Vec<f64>,
@@ -53,8 +34,8 @@ impl Trimat {
         self.rows.push(r as i32);
         self.cols.push(c as i32);
         self.vals.push(v);
-        if (r as i32 >= self.nrows) { self.nrows = r as i32 + 1; }
-        if (c as i32 >= self.ncols) { self.ncols = c as i32 + 1; }
+        if r as i32 >= self.nrows { self.nrows = r as i32 + 1; }
+        if c as i32 >= self.ncols { self.ncols = c as i32 + 1; }
     }
     pub fn rows(&self) -> &Vec<i32> { &self.rows }
     pub fn cols(&self) -> &Vec<i32> { &self.cols }
@@ -87,6 +68,52 @@ pub struct GraphSLAMSolve {
 }
 
 
+// fn transform(cones: &Vec<[f64; 2]>, x: &Vec<f64>) ->  Vec<[f64; 2]> {
+//     let (s, c) = x[2].sin_cos();
+//     // println!("transform: x: {:?}, s: {}, c: {}", x, s, c);
+//     cones.iter().map(|z| [z[0]*c - z[1]*s + x[0], z[0]*s + z[1]*c + x[1]]).collect()
+// }
+
+// impl GraphSLAMSolve {
+//     fn cost(&mut self, x: &Vec<f64>, global_cone_measurements: &Vec<[f64; 2]>, color: &Vec<u8>) -> f64 {
+//         transform(global_cone_measurements, x).iter()
+//             .enumerate()
+//             .map(|cone| self.lhat.iter()
+//                 .zip(&self.color)
+//                 .filter(|x| color[cone.0] == *x.1)
+//                 // .inspect(|x| println!("inspection: {:?}", x))
+//                 .map(|x| x.0)
+//                 .map(|x| (x[0]-cone.1[0]).powi(2) + (x[1]-cone.1[1]).powi(2))
+//                 .min_by(|a, b| {a.partial_cmp(b).unwrap()}))
+//             .map(|x| x.unwrap_or(0.0))
+//             .map(|x| if x > self.dclip { self.dclip } else { x })
+//             .sum()
+//     }
+//     fn data_association(&mut self, x0: &Vec<f64>, global_cone_measurements: &Vec<[f64; 2]>, color: &Vec<u8>) -> Vec<[f64; 2]> {
+//         let eps = 1e-9;
+//         let n_newton_steps: usize = 1;
+//         // fn grad(x: Vec<f64>) {
+//         //     let f0 = self.cost(x, global_cone_measurements, color);
+//         //     out = x0.clone();
+//         //     for i: usize in 0..3 {
+//         //         xi = x.clone();
+//         //         xi[i] += eps;
+//         //         out[i] = (self.cost(x, global_cone_measurements, color)-f0)/eps;
+//         //     }
+//         // }
+//         let mut x = vec![x0[0], x0[1], 0.0];
+//         let cost = |x| self.cost(x, &global_cone_measurements, &color)
+//         for _ in 0..n_newton_steps {
+//             let hess= na::Matrix3::from_row_iterator(x.forward_hessian_nograd(&cost).into_iter().map(|v| na::Matrix1x3::from_vec(v)));
+//             let grad = na::Matrix3x1::from_vec(x.central_diff(&cost));
+//             let f0 = self.cost(&x, &global_cone_measurements, &color);
+            
+//         }
+//         transform(&global_cone_measurements, &x)
+//     }
+// }
+
+
 #[pymethods]
 impl GraphSLAMSolve {
     #[new]
@@ -108,11 +135,8 @@ impl GraphSLAMSolve {
     ) -> Self {
         let x0 = [x0[0], x0[1]];
         let mut A = Trimat::new();
-        let mut b = x0.to_vec();
         A.add_triplet(0, 0, 1.0);
         A.add_triplet(1, 1, 1.0);
-
-        let mut xhat = vec![x0];
 
         GraphSLAMSolve {
             max_landmark_distance: max_landmark_distance,
@@ -121,7 +145,7 @@ impl GraphSLAMSolve {
             dclip: dclip,
 
             A: A,
-            b: b,
+            b: x0.to_vec(),
 
             x: vec![0],
             l: vec![],
@@ -131,7 +155,7 @@ impl GraphSLAMSolve {
             neqns: 2,
             nvars: 2,
 
-            xhat: xhat,
+            xhat: vec![x0],
             lhat: vec![],
             color: vec![],
         }
@@ -179,17 +203,17 @@ impl GraphSLAMSolve {
 
         // Perform data association
         // let zprime = self.data_association(z, &color);
-        for (cone, c) in zip(zprime, color) {
+        for (cone, c) in iter::zip(zprime, color) {
             // get closest cone of same color
             // find it's index in `lhat` and `l`
-            let (mut l_idx, min_dist, measurement) = match self.lhat.iter()
+            let (mut l_idx, min_dist) = match self.lhat.iter()
                 .zip(&self.color)
                 .enumerate()
                 .filter(|x| *(x.1).1==c)
-                .map(|x| (x.0, (x.1.0[0] - cone[0]).powi(2) + (x.1.0[1] - cone[1]).powi(2), x.1.0))
-                .min_by(|a, b: &(usize, f64, &[f64; 2])| (&a.1).partial_cmp(&b.1).unwrap()) {
-                    Some((l_idx, min_dist, measurement)) => (l_idx, min_dist, cone),
-                    None => (0usize, f64::INFINITY, cone), // if there were no cones with the same color
+                .map(|x| (x.0, (x.1.0[0] - cone[0]).powi(2) + (x.1.0[1] - cone[1]).powi(2)))
+                .min_by(|a, b| (&a.1).partial_cmp(&b.1).unwrap()) {
+                    Some(data) => data,
+                    None => (0usize, f64::INFINITY), // if there were no cones with the same color
             };
             // add landmark if it's new
             if min_dist > self.max_landmark_distance {
@@ -205,8 +229,8 @@ impl GraphSLAMSolve {
             self.A.add_triplet(*self.z.last().unwrap()+1, self.l[l_idx]+1,           self.z_weight);
             self.A.add_triplet(*self.z.last().unwrap(),   *self.x.last().unwrap(),   -self.z_weight);
             self.A.add_triplet(*self.z.last().unwrap()+1, *self.x.last().unwrap()+1, -self.z_weight);
-            self.b.push((measurement[0]-self.xhat.last().unwrap()[0])*self.z_weight);
-            self.b.push((measurement[1]-self.xhat.last().unwrap()[1])*self.z_weight);
+            self.b.push((cone[0]-self.xhat.last().unwrap()[0])*self.z_weight);
+            self.b.push((cone[1]-self.xhat.last().unwrap()[1])*self.z_weight);
         }
     }
 
@@ -215,7 +239,7 @@ impl GraphSLAMSolve {
         let mut ra = self.A.rows().clone();
         let mut ca = self.A.cols().clone();
         let mut va = self.A.vals().clone();
-        let mut b = self.b.clone();
+        // let mut b = self.b.clone();
         let a = cs_sparse { 
             nzmax:ra.len() as i32, 
             m: self.A.nrows, 
@@ -251,7 +275,7 @@ impl GraphSLAMSolve {
         let mut ca = self.A.cols().clone();
         let mut va = self.A.vals().clone();
         let mut b = self.b.clone();
-        let mut atb = vec![0.0; self.b.len()];
+        // let mut atb = vec![0.0; self.b.len()];
 
         unsafe {
             let a = cs_sparse { 
@@ -285,7 +309,7 @@ impl GraphSLAMSolve {
         let mut ra = self.A.rows().clone();
         let mut ca = self.A.cols().clone();
         let mut va = self.A.vals().clone();
-        let mut b = self.b.clone();
+        // let mut b = self.b.clone();
         let mut atb = vec![0.0; self.A.ncols as usize];
         // println!("ra: {:?}\nca: {:?}\nva: {:?}\nb: {:?}", &ra, &ca, &va, &b);
         // println!("m: {:?}\nn: {:?}", &self.A.nrows, &self.A.ncols);
@@ -312,7 +336,7 @@ impl GraphSLAMSolve {
             let at2: *const cs = cs_triplet(&at);
             let ata: *const cs = cs_multiply(at2, a2);
 
-            let _ = cs_gaxpy(at2, b.as_ptr(), atb.as_mut_ptr());
+            let _ = cs_gaxpy(at2, self.b.as_ptr(), atb.as_mut_ptr());
 
             cs_cholsol(ata, atb.as_mut_ptr(), 0);
             // cs_lusol(ata, atb.as_mut_ptr(), 0, 1e-14);
@@ -336,7 +360,7 @@ impl GraphSLAMSolve {
         let mut ra = self.A.rows().clone();
         let mut ca = self.A.cols().clone();
         let mut va = self.A.vals().clone();
-        let mut b = self.b.clone();
+        // let mut b = self.b.clone();
         let mut atb = vec![0.0; self.A.ncols as usize];
         // println!("ra: {:?}\nca: {:?}\nva: {:?}\nb: {:?}", &ra, &ca, &va, &b);
         // println!("m: {:?}\nn: {:?}", &self.A.nrows, &self.A.ncols);
@@ -362,7 +386,7 @@ impl GraphSLAMSolve {
             let a2: *const cs = cs_triplet(&a);
             let at2: *const cs = cs_triplet(&at);
             let ata: *const cs = cs_multiply(at2, a2);
-            let _ = cs_gaxpy(at2, b.as_ptr(), atb.as_mut_ptr());
+            let _ = cs_gaxpy(at2, self.b.as_ptr(), atb.as_mut_ptr());
 
             cs_lusol(ata, atb.as_mut_ptr(), 0, tol);
         }
