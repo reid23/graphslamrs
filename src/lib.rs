@@ -7,92 +7,33 @@ use itertools::*;
 // use std::{cmp::Ordering, process::exit};
 use finitediff::FiniteDiff;
 use nalgebra as na;
-use std::os::raw::c_void;
-use std::ptr::{null, null_mut};
-use std::{iter, ptr};
+use std::ptr::{addr_of_mut, null_mut};
+use std::iter;
 use std::collections::HashMap;
 use std::time::Instant;
 
 use core::f64;
 // include!("bindings.rs");
 
-const control86: ma86_control_d = ma86_control_d {
-    f_arrays: 0,
-    diagnostics_level: 0,
-    unit_diagnostics: 6,
-    unit_error: 6,
-    unit_warning: 6,
-    nemin: 32,
-    nb: 256,
-    action: 1,
-    nbi: 16,
-    pool_size: 25000,
-    small_: 9.999999682655225e-21,
-    static_: 0.0,
-    u: 0.009999999776482582,
-    umin: 1.0,
-    scaling: 0,
-};
-static mut info86: ma86_info_d = ma86_info_d {
-    detlog: 0.0,
-    detsign: 0,
-    flag: 0,
-    matrix_rank: 0,
-    maxdepth: 0,
-    num_delay: 0,
-    num_factor: 0,
-    num_flops: 0,
-    num_neg: 0,
-    num_nodes: 0,
-    num_nothresh: 0,
-    num_perturbed: 0,
-    num_two: 0,
-    pool_size: 0,
-    stat: 0,
-    usmall: 0.0,
-};
-static mut control68: mc68_control_i = mc68_control_i {
-    f_array_in: 0,
-    f_array_out: 0,
-    min_l_workspace: 25769803776,
-    // min_l_workspace:    250000000,
-    lp: 6,
-    wp: 6,
-    mp: 1,
-    nemin: 0,
-    print_level: 0,
-    row_full_thresh: 10,
-    row_search: 0,
-};
-static mut info68: mc68_info_i = mc68_info_i {
-    flag: 0,
-    iostat: 0,
-    stat: 0,
-    out_range: 0,
-    duplicate: 0,
-    n_compressions: 0,
-    n_dense_rows: 0,
-    n_zero_eigs: 0,
-    l_workspace: 0,
-    zb01_info: 0,
-};
+
 const control: ma97_control_d = ma97_control_d { 
     f_arrays: 0, 
     action: 1, 
-    nemin: 8, 
-    multiplier: 1.1, 
-    ordering: 1,
+    nemin: 32,  // default 8
+    multiplier: 1.1, // no affect
+    ordering: 1, // 1 is fastest
     print_level: 0, 
-    scaling: 0, 
+    scaling: 0, // 0 (no scaling) fastest
     small: 1e-20, 
-    u: 0.009999999776482582, 
+    u: 0.01, //no affect
     unit_diagnostics: 6, 
     unit_error: 6,
     unit_warning: 6,
-    factor_min: 20000000,
-    solve_blas3: 0,
-    solve_min: 100000,
-    solve_mf: 0,
+    // factor_min: 20000000,
+    factor_min: 200000,
+    solve_blas3: 0, // no affect
+    solve_min: 10000,
+    solve_mf: 0, // no affect
     consist_tol: 2.220446049250313e-16,
     ispare: [0i32; 5], 
     rspare: [0.0f64; 10] 
@@ -586,117 +527,14 @@ impl GraphSLAMSolve {
             let mut akeep = std::ptr::null_mut();
             let mut fkeep = std::ptr::null_mut();
             // let mut order = 5;
-            let mut other = std::ptr::null_mut();
+            let other = std::ptr::null_mut();
             
             cs_fkeep(&mut ata, Some(fkeep_u), other);
             // cs_print(&ata, 0);
-            ma97_analyse_d(0, ata.n, ata.p, ata.i, ata.x, &mut akeep, &control, &mut info, null_mut());
-            ma97_factor_solve_d(3, ata.p, ata.i, ata.x, 1, atb.as_mut_ptr(), ata.n, &mut akeep, &mut fkeep, &control, &mut info, null_mut());
+            ma97_analyse_d(0, ata.n, ata.p, ata.i, ata.x, &mut akeep, &control, addr_of_mut!(info), null_mut());
+            ma97_factor_solve_d(3, ata.p, ata.i, ata.x, 1, atb.as_mut_ptr(), ata.n, &mut akeep, &mut fkeep, &control, addr_of_mut!(info), null_mut());
             // println!("factor_solved");
             ma97_finalise_d(&mut akeep, &mut fkeep);
-            // println!("finalized");
-            
-            // cs_free(a2);
-            // cs_free(at2);
-            // cs_free(other);
-            // cs_free(((&mut ata) as *mut cs) as *mut c_void);
-            // cs_cholsol(ata, atb.as_mut_ptr(), 0);
-            let dt = tic.elapsed();
-            println!("completed solve in {:?}", dt);
-            // cs_lusol(ata, atb.as_mut_ptr(), 0, 1e-14);
-        }
-        // println!("{:?}", b[0..(self.A.ncols as usize)].to_vec());
-
-        let tic = Instant::now();
-        for (idx, i) in enumerate(&self.x) {
-            self.xhat[idx].copy_from_slice(&atb[*i..(i+2)]);
-        }
-        for (idx, i) in enumerate(&self.l) {
-            self.lhat[idx].copy_from_slice(&atb[*i..(i+2)]);
-        }
-        let dt = tic.elapsed();
-        println!("copied data back in {:?}", dt);
-
-    }
-    /// solve the graph using the cholesky decomposition of A.T@A
-    /// this is the fastest method provided here.
-    /// solves in-place; does not return results.
-    pub fn solve_graph_ma86(&mut self) {
-        let tic = Instant::now();
-        // use cholesky decomposition to solve A.T@A \ A.T@b
-        let mut ra = self.A.rows().clone();
-        let mut ca = self.A.cols().clone();
-        let mut va = self.A.vals().clone();
-        // let mut b = self.b.clone();
-        let mut atb = vec![0.0; self.A.ncols as usize];
-        // println!("ra: {:?}\nca: {:?}\nva: {:?}\nb: {:?}", &ra, &ca, &va, &b);
-        // println!("m: {:?}\nn: {:?}", &self.A.nrows, &self.A.ncols);
-        let dt = tic.elapsed();
-        println!("initialized in {:?}", dt);
-        unsafe {
-            let tic = Instant::now();
-            let a = cs_sparse { 
-                nzmax:ra.len() as i32, 
-                m: self.A.nrows, 
-                n: self.A.ncols, 
-                p: ca.as_mut_ptr(),
-                i: ra.as_mut_ptr(),
-                x: va.as_mut_ptr(), 
-                nz: ra.len() as i32
-            };
-            let at = cs_sparse {
-                nzmax:ra.len() as i32, 
-                m: self.A.ncols, 
-                n: self.A.nrows, 
-                p: ra.as_mut_ptr(),
-                i: ca.as_mut_ptr(),
-                x: va.as_mut_ptr(), 
-                nz: ra.len() as i32
-            };
-            let dt = tic.elapsed();
-            println!("loaded into csparse in {:?}", dt);
-            let tic = Instant::now();
-            let a2: *const cs = cs_triplet(&a);
-            let at2: *const cs = cs_triplet(&at);
-            let dt = tic.elapsed();
-            println!("converted from triplet in {:?}", dt);
-            let tic = Instant::now();
-            let mut ata = *cs_multiply(at2, a2);
-            let dt = tic.elapsed();
-            println!("multiplied a.T@a in {:?}", dt);
-            
-            let tic = Instant::now();
-            let _ = cs_gaxpy(at2, self.b.as_ptr(), atb.as_mut_ptr());
-            let dt = tic.elapsed();
-            println!("multiplied a.T@b in {:?}", dt);
-            
-            let tic = Instant::now();
-            
-            let mut akeep = std::ptr::null_mut();
-            // let mut fkeep = std::ptr::null_mut();
-            let mut order = vec![0i32; ata.n as usize];
-            let mut other = std::ptr::null_mut();
-            
-            cs_fkeep(&mut ata, Some(fkeep_u), other);
-
-            let dt = tic.elapsed();
-            println!("got lower triangle in {:?}", dt);
-            
-            let tic = Instant::now();
-            // cs_print(&ata, 0);
-            // mc68_default_control_i(&mut control68);
-            mc68_order_i(4, ata.n, ata.p, ata.i, order.as_mut_ptr(), &control68, &mut info68);
-
-            let dt = tic.elapsed();
-            println!("got mc68 order in {:?}", dt);
-            
-            let tic = Instant::now();
-            // ma86_default_control_d(&mut control86);
-            // println!("control: {:?}", &control68);
-            ma86_analyse_d(ata.n, ata.p, ata.i, order.as_mut_ptr(), &mut akeep, &control86, &mut info86);
-            ma86_factor_solve_d(ata.n, ata.p, ata.i, ata.x, order.as_ptr(), &mut akeep, &control86, &mut info86, 1, ata.n, atb.as_mut_ptr(), null_mut());
-            // println!("factor_solved");
-            ma86_finalise_d(&mut akeep, &mut control86);
             // println!("finalized");
             
             // cs_free(a2);

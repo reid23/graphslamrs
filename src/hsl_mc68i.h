@@ -1,1 +1,0 @@
-/home/reid/Documents/coinhsl-install/include/coin-or/hsl/hsl_mc68i.h
