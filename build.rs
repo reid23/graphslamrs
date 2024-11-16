@@ -3,12 +3,13 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    // println!("cargo:rustc-link-search=/usr/local/lib/");
-    // println!("cargo:rustc-link-lib=static=hsl_ma57");
+    println!("cargo:rustc-link-search=/home/reid/Documents/coinhsl-install/lib/");
+    println!("cargo:rustc-link-lib=dylib=hsl");
     println!("cargo::rerun-if-changed=src/csparse.c");
     // Use the `cc` crate to build a C file and statically link it.
     cc::Build::new()
         .file("src/csparse.c")
+        .opt_level(5)
         .compile("csparse");
 
     println!("cargo:rustc-link-lib=csparse");
@@ -17,7 +18,7 @@ fn main() {
     // to bindgen, and lets you build up options for
     // the resulting bindings.
     let bindings = bindgen::Builder::default()
-        .header("src/csparse.h")
+        .header("src/bindings.h")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         .generate()
         .expect("Unable to generate bindings");

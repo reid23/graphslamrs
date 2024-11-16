@@ -926,7 +926,9 @@ int *cs_etree (const cs *A, int ata)
     }
     return (cs_idone (parent, NULL, w, 1)) ;
 }
-
+int fkeep_u(int i, int j, double v, void *p) {
+    return (int)(i >= j);
+}
 /* drop entries for which fkeep(A(i,j)) is false; return nz if OK, else -1 */
 int cs_fkeep (cs *A, int (*fkeep) (int, int, double, void *), void *other)
 {

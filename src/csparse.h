@@ -123,6 +123,7 @@ cs *cs_done (cs *C, void *w, void *x, int ok) ;
 int *cs_idone (int *p, cs *C, void *w, int ok) ;
 csn *cs_ndone (csn *N, cs *C, void *w, void *x, int ok) ;
 csd *cs_ddone (csd *D, cs *C, void *w, int ok) ;
+int fkeep_u (int i, int j, double v, void *p );
 
 #define CS_MAX(a,b) (((a) > (b)) ? (a) : (b))
 #define CS_MIN(a,b) (((a) < (b)) ? (a) : (b))
