@@ -133,6 +133,11 @@ impl GraphSLAMSolve {
         if self.lhat.len() == 0 { return (x0.clone(), cone_measurements.clone()); }
         
         let mut x = vec![x0[0], x0[1], 0.0];
+        
+        // function to apply on top of the *squared* distances
+        // choose smartly to help convergence
+        // x^2 seems to work ok
+        let dist_fn = |x: f64| x.powi(2);
         let cost = | x: &Vec<f64> | -> f64 {
             transform(cone_measurements, x).iter()
             .zip(color)
@@ -140,10 +145,10 @@ impl GraphSLAMSolve {
                 .zip(&self.color)
                 .filter(|x| cone.1 == x.1)
                 .map(|x| x.0)
-                .map(|x| (x[0]-cone.0[0]).powi(2) + (x[1]-cone.0[1]).powi(2))
+                .map(|x| dist_fn((x[0]-cone.0[0]).powi(2) + (x[1]-cone.0[1]).powi(2)))
                 .min_by(|a, b| {a.partial_cmp(b).unwrap()})))
             .map(|x| (x.0, x.1.unwrap_or(0.0)))
-            .map(|x| x.1.clamp(0.0, self.dclip.get(x.0).unwrap().powi(2)))
+            .map(|x| x.1.clamp(0.0, dist_fn(self.dclip.get(x.0).unwrap().powi(2))))
             .sum()
         };
         for _ in 0..self.max_newton_steps {
