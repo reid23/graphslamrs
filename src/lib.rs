@@ -100,6 +100,7 @@ pub struct GraphSLAMSolve {
     pub dx_weight: f64,
     pub z_weight: f64,
     pub dclip: HashMap<u8, f64>,
+    pub max_icp_steps: usize,
     pub max_newton_steps: usize,
     pub newton_solve_tol_sr: f64,
 
@@ -117,6 +118,7 @@ pub struct GraphSLAMSolve {
     pub xhat: Vec<[f64; 2]>,
     pub lhat: Vec<[f64; 2]>,
     pub color: Vec<u8>,
+    pub data_association_strategy: usize,
 }
 
 /// utility to rotate and translate a set of points
@@ -124,12 +126,101 @@ fn transform(cones: &Vec<[f64; 2]>, x: &Vec<f64>) ->  Vec<[f64; 2]> {
     let (s, c) = x[2].sin_cos();
     // println!("transform: x: {:?}, s: {}, c: {}", x, s, c);
     cones.iter().map(|z| [z[0]*c - z[1]*s + x[0], 
-                                     z[0]*s + z[1]*c + x[1]]).collect()
+                          z[0]*s + z[1]*c + x[1]]).collect()
 }
 
 // this has to be separate because it's not a #[pymethods] thing
 impl GraphSLAMSolve {
-    fn data_association(&mut self, x0: &Vec<f64>, cone_measurements: &Vec<[f64; 2]>, color: &Vec<u8>) -> (Vec<f64>, Vec<[f64; 2]>) {
+    fn data_association_3(&mut self, x0: &Vec<f64>, cone_measurements: &Vec<[f64; 2]>, color: &Vec<u8>) -> (Vec<f64>, Vec<[f64; 2]>) {
+        let mut x = vec![x0[0], x0[1], 0.0];
+        for i in 0..self.max_icp_steps {
+            let initial_x = x.clone();
+            let closest_cones = transform(cone_measurements, &x).iter()
+                .zip(color)
+                .map(|cone| (cone.1, self.lhat.iter()
+                    .zip(&self.color)
+                    .filter(|x| cone.1 == x.1)
+                    .map(|x| x.0)
+                    .map(|x| (x, (x[0]-cone.0[0]).powi(2) + (x[1]-cone.0[1]).powi(2)))
+                    .min_by(|a, b| {a.1.partial_cmp(&b.1).expect("failed in compare")})))
+                .map(|x| x.1)
+                .map(|x| x.unwrap_or((&[f64::NAN, f64::NAN], 0.0)).0)
+                // .map(|x| if x.1 < self.max_landmark_distance.powi(2) {x.0} else {&[f64::NAN, f64::NAN]} )
+                .collect::<Vec<&[f64; 2]>>();
+            
+            
+        }
+        return (x.clone(), transform(&cone_measurements, &x));
+    }
+    
+    fn data_association_2(&mut self, x0: &Vec<f64>, cone_measurements: &Vec<[f64; 2]>, color: &Vec<u8>) -> (Vec<f64>, Vec<[f64; 2]>) {
+        if self.lhat.len() == 0 { return (x0.clone(), cone_measurements.clone()); }
+        
+        let mut x = vec![x0[0], x0[1], 0.0];
+        
+        
+        // 1. compute closest points
+        // 2. move everything
+        // repeat
+
+        for i in 0..self.max_icp_steps {
+            let initial_x = x.clone();
+            let closest_cones = transform(cone_measurements, &x).iter()
+                .zip(color)
+                .map(|cone| (cone.1, self.lhat.iter()
+                    .zip(&self.color)
+                    .filter(|x| cone.1 == x.1)
+                    .map(|x| x.0)
+                    .map(|x| (x, (x[0]-cone.0[0]).powi(2) + (x[1]-cone.0[1]).powi(2)))
+                    .min_by(|a, b| {a.1.partial_cmp(&b.1).expect("failed in compare")})))
+                .map(|x| x.1)
+                .map(|x| x.unwrap_or((&[f64::NAN, f64::NAN], 0.0)).0)
+                // .map(|x| if x.1 < self.max_landmark_distance.powi(2) {x.0} else {&[f64::NAN, f64::NAN]} )
+                .collect::<Vec<&[f64; 2]>>();
+            let cost = | x: &Vec<f64> | -> f64 {
+                transform(cone_measurements, x).iter()
+                    .zip(color)
+                    .zip(closest_cones.clone())
+                    .filter(|x| !x.1[0].is_nan())
+                    .map(|x| (x.0.1, (x.0.0[0] - x.1[0]).powi(4) + (x.0.0[1] - x.1[1]).powi(4)))
+                    .map(|x| x.1.clamp(0.0, self.dclip.get(x.0).expect("unknown color passed").powi(4)))
+                    .sum()
+            };
+            // println!("closest cones: {:?}", closest_cones);
+            for _ in 0..self.max_newton_steps {
+                let grad = x.central_diff(&cost);
+                // println!("grad: {:?}", grad);
+                // first check if grad = 0. if it is, we can just be done
+                if grad.iter().map(|x| x.powi(2)).sum::<f64>() < self.newton_solve_tol_sr { break; }
+    
+                // otherwise, compute the hessian and put both it and the gradient into
+                // Matrix objects so we can do linear algebra on them
+                let grad = na::Matrix3x1::from_vec(grad);
+                let hess= x.forward_hessian_nograd(&cost);
+                
+                // technically writing the args out like this is misleading,
+                // since the data is stored and entered in a column-major format,
+                // but it doesn't matter since the hessian is symmetric
+                let hess = na::Matrix3::new(
+                    hess[0][0], hess[0][1], hess[0][2], 
+                    hess[1][0], hess[1][1], hess[1][2], 
+                    hess[2][0], hess[2][1], hess[2][2],
+                );
+                if let Some(inv) = hess.try_inverse() {
+                    let update = inv*grad;
+                    x[0] -= update[0];
+                    x[1] -= update[1];
+                    x[2] -= update[2];
+                } else { break; }
+            }
+            println!("icp iter {} gave x={:?}", i, x.clone());
+            if initial_x==x {
+                break;
+            }
+        }
+        return (x.clone(), transform(&cone_measurements, &x));
+    }
+    fn data_association_1(&mut self, x0: &Vec<f64>, cone_measurements: &Vec<[f64; 2]>, color: &Vec<u8>) -> (Vec<f64>, Vec<[f64; 2]>) {
         if self.lhat.len() == 0 { return (x0.clone(), cone_measurements.clone()); }
         
         let mut x = vec![x0[0], x0[1], 0.0];
@@ -174,6 +265,7 @@ impl GraphSLAMSolve {
                 x[0] -= update[0];
                 x[1] -= update[1];
                 x[2] -= update[2];
+                // println!("here");
             } else { break; }
         }
         return (x.clone(), transform(&cone_measurements, &x));
@@ -192,17 +284,21 @@ impl GraphSLAMSolve {
     ///     dx_weight (float, optional): weight (certainty) for odometry measurements. Defaults to 1.0.
     ///     z_weight (float, optional): weight (certainty) for landmark measurements. Defaults to 5.0.
     ///     dclip (dict[int, float], optional): distance at which to clip cost function for data association. one entry in dictionary per possible landmark color. Defaults to {0: 0.2, 1: 0.2, 2: 10.0}.
-    ///     max_newton_steps (int, optional): max number of steps of newton's method to take when optimizing during data association. Defaults to 15.
+    ///     max_icp_steps (int, optional): max number of ICP steps to take. Defaults to 15.
+    ///     max_newton_steps (int, optional): max number of steps of newton's method to take when optimizing during data association. Defaults to 5.
     ///     newton_solve_tol (float, optional): magnitude of gradient under which to consider data association optimization finished. Defaults to 1e-3.
-    #[pyo3(signature=(x0=[0.0, 0.0], max_landmark_distance=0.5, dx_weight=1.0, z_weight=5.0, dclip=HashMap::from([(0u8, 0.2), (1u8, 0.2), (2u8, 10.0)]), max_newton_steps=15, newton_solve_tol=1e-3), text_signature="(x0: list[float] = [0.0, 0.0], max_landmark_distance: float = 0.5, dx_weight: float = 1.0, z_weight: float = 5.0, dclip: dict[int, float] = {0: 0.2, 1: 0.2, 2: 10.0}, max_newton_steps: int = 15, newton_solve_tol: float = 1e-3)")]
+    ///     data_association_strategy (int, optional): which data association algorithm to use. 0=original single optimization problem, 1="true" ICP.
+    #[pyo3(signature=(x0=[0.0, 0.0], max_landmark_distance=0.5, dx_weight=1.0, z_weight=5.0, dclip=HashMap::from([(0u8, 0.2), (1u8, 0.2), (2u8, 10.0)]), max_icp_steps=15, max_newton_steps=5, newton_solve_tol=1e-3, data_association_strategy=0), text_signature="(x0: list[float] = [0.0, 0.0], max_landmark_distance: float = 0.5, dx_weight: float = 1.0, z_weight: float = 5.0, dclip: dict[int, float] = {0: 0.2, 1: 0.2, 2: 10.0}, max_icp_steps: int = 15, max_newton_steps: int = 5, newton_solve_tol: float = 1e-3, data_association_strategy: int = 0)")]
     pub fn new(
         x0: [f64; 2],
         max_landmark_distance: f64,
         dx_weight: f64,
         z_weight: f64,
         dclip: HashMap<u8, f64>,
+        max_icp_steps: usize,
         max_newton_steps: usize,
         newton_solve_tol: f64,
+        data_association_strategy: usize,
     ) -> Self {
         let x0 = [x0[0], x0[1]];
         let mut A = Trimat::new();
@@ -214,6 +310,7 @@ impl GraphSLAMSolve {
             dx_weight: dx_weight,
             z_weight: z_weight,
             dclip: dclip,
+            max_icp_steps: max_icp_steps,
             max_newton_steps: max_newton_steps,
             newton_solve_tol_sr: newton_solve_tol.powi(2),
 
@@ -231,6 +328,7 @@ impl GraphSLAMSolve {
             xhat: vec![x0],
             lhat: vec![],
             color: vec![],
+            data_association_strategy: data_association_strategy,
         }
     }
     
@@ -243,7 +341,11 @@ impl GraphSLAMSolve {
         // we've got to negate the theta (heading) coordinate, since data association is working 
         // with the angle of the cones (vectors => contravariant) while we're working with the angle 
         // of the car frame (bases => covariant)
-        let (x, _) = self.data_association(&vec![xhat[0], xhat[1], -xhat[2]], &z, &color);
+        let (x, _) = if self.data_association_strategy == 0 {
+            self.data_association_1(&vec![xhat[0], xhat[1], -xhat[2]], &z, &color)
+        } else {
+            self.data_association_2(&vec![xhat[0], xhat[1], -xhat[2]], &z, &color)
+        };
         return vec![x[0], x[1], -x[2]];
     }
 
@@ -255,7 +357,7 @@ impl GraphSLAMSolve {
     ///     color (ndarray or list): categorical array of which color each of the measurements are. Elements should be dtype=np.uint8 or python ints.
     ///     run_data_association (bool, optional): whether or not to run the iterative alignment algorithm to match the observed cones to known ones.
     #[pyo3(signature = (dx, z, color, run_data_association=true))]
-    pub fn update_graph(&mut self, dx: [f64; 2], z: Vec<[f64; 2]>, color: Vec<u8>, run_data_association: bool) {
+    pub fn update_graph(&mut self, dx: [f64; 2], z: Vec<[f64; 2]>, color: Vec<u8>, run_data_association: bool) -> Vec<usize> {
 
         // first, add two equations and two variables
         // for the next position and corresponding dx
@@ -284,11 +386,15 @@ impl GraphSLAMSolve {
         // Data association! tries to rotate and translate our measured cones
         // to optimally line them up with the cones we've seen already.
         let zprime = if run_data_association {
-            self.data_association(&vec![cur_xhat[0], cur_xhat[1], 0.], &z, &color).1
+            if self.data_association_strategy==0 {
+                self.data_association_1(&vec![cur_xhat[0], cur_xhat[1], 0.], &z, &color).1
+            } else {
+                self.data_association_2(&vec![cur_xhat[0], cur_xhat[1], 0.], &z, &color).1
+            }
         } else {
             z.iter().map(|x| [x[0]+cur_xhat[0], x[1]+cur_xhat[1]]).collect()
         };
-
+        let mut idxs = vec![0usize; zprime.len()];
         // match the cones!
         // for each cone we see, find the closest existing cone, and if that cone is within
         // `self.max_landmark_distance`, call them the same cone.
@@ -313,6 +419,7 @@ impl GraphSLAMSolve {
                 self.color.push(c);
                 l_idx = self.lhat.len()-1;
             }
+            idxs[idx] = l_idx;
 
             // add equations corresponding to sight of landmark
             self.z.push(self.neqns);
@@ -324,6 +431,7 @@ impl GraphSLAMSolve {
             self.b.push(z[idx][0]*self.z_weight);
             self.b.push(z[idx][1]*self.z_weight);
         }
+        return idxs;
     }
 
     /// print a visual representation of the A matrix
@@ -406,7 +514,7 @@ impl GraphSLAMSolve {
     /// this is the fastest method provided here.
     /// solves in-place; does not return results.
     pub fn solve_graph(&mut self) {
-        let tic = Instant::now();
+        // let tic = Instant::now();
         // use cholesky decomposition to solve A.T@A \ A.T@b
         let mut ra = self.A.rows().clone();
         let mut ca = self.A.cols().clone();
@@ -415,10 +523,10 @@ impl GraphSLAMSolve {
         let mut atb = vec![0.0; self.A.ncols as usize];
         // println!("ra: {:?}\nca: {:?}\nva: {:?}\nb: {:?}", &ra, &ca, &va, &b);
         // println!("m: {:?}\nn: {:?}", &self.A.nrows, &self.A.ncols);
-        let dt = tic.elapsed();
-        println!("initialized in {:?}", dt);
+        // let dt = tic.elapsed();
+        // println!("initialized in {:?}", dt);
         unsafe {
-            let tic = Instant::now();
+            // let tic = Instant::now();
             let a = cs_sparse { 
                 nzmax:ra.len() as i32, 
                 m: self.A.nrows, 
@@ -437,40 +545,39 @@ impl GraphSLAMSolve {
                 x: va.as_mut_ptr(), 
                 nz: ra.len() as i32
             };
-            let dt = tic.elapsed();
-            println!("loaded into csparse in {:?}", dt);
-            let tic = Instant::now();
+            // let dt = tic.elapsed();
+            // println!("loaded into csparse in {:?}", dt);
+            // let tic = Instant::now();
             let a2: *const cs = cs_triplet(&a);
             let at2: *const cs = cs_triplet(&at);
-            let dt = tic.elapsed();
-            println!("converted from triplet in {:?}", dt);
-            let tic = Instant::now();
+            // let dt = tic.elapsed();
+            // println!("converted from triplet in {:?}", dt);
+            // let tic = Instant::now();
             let ata: *const cs = cs_multiply(at2, a2);
-            let dt = tic.elapsed();
-            println!("multiplied a.T@a in {:?}", dt);
+            // let dt = tic.elapsed();
+            // println!("multiplied a.T@a in {:?}", dt);
             
-            let tic = Instant::now();
+            // let tic = Instant::now();
             let _ = cs_gaxpy(at2, self.b.as_ptr(), atb.as_mut_ptr());
-            let dt = tic.elapsed();
-            println!("multiplied a.T@b in {:?}", dt);
+            // let dt = tic.elapsed();
+            // println!("multiplied a.T@b in {:?}", dt);
             
-            let tic = Instant::now();
+            // let tic = Instant::now();
             cs_cholsol(ata, atb.as_mut_ptr(), 0);
-            let dt = tic.elapsed();
-            println!("completed solve in {:?}", dt);
-            // cs_lusol(ata, atb.as_mut_ptr(), 0, 1e-14);
+            // let dt = tic.elapsed();
+            // println!("completed solve in {:?}", dt);
         }
         // println!("{:?}", b[0..(self.A.ncols as usize)].to_vec());
 
-        let tic = Instant::now();
+        // let tic = Instant::now();
         for (idx, i) in enumerate(&self.x) {
             self.xhat[idx].copy_from_slice(&atb[*i..(i+2)]);
         }
         for (idx, i) in enumerate(&self.l) {
             self.lhat[idx].copy_from_slice(&atb[*i..(i+2)]);
         }
-        let dt = tic.elapsed();
-        println!("copied data back in {:?}", dt);
+        // let dt = tic.elapsed();
+        // println!("copied data back in {:?}", dt);
 
     }
 
@@ -612,6 +719,7 @@ impl GraphSLAMSolve {
         }
 
     }
+
 
     /// get all cones, or those matching `color`
     #[pyo3(signature=(color=None))]

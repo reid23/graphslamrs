@@ -7,6 +7,15 @@ This was originally written in Python using `scipy.sparse` and `scipy.optimize.m
 1. speed. Even with everything done using numpy broadcasting or scipy functions, the Rust implementation is at least 3x faster for the ~6000 edge test case.
 2. learning. I read about the Maturin.rs packaging framework for pyo3 python bindings, and I wanted to try it out.
 
+## Installation
+
+This package is not listed on PyPI, but you can install it from my server directly. Change the two `310`s to be representative of your python version; the options are `37`, `38`, `39`, `310`, `311`, `312`, and `313`. 
+I have only built wheels for Linux on x86 right now.
+```bash
+pip install https://reid.xz.ax/graphslamrs/graphslamrs-0.0.4-cp310-cp310-manylinux_2_34_x86_64.whl
+```
+You can also simply clone this repo and run `maturin develop --release`.
+
 ## main graph solve
 
 The current implementation keeps track of everything using a custom sparse matrix struct that uses the triplet format. To solve, the matrix is loaded into a CSPARSE matrix and converted to Compressed Column format. 
