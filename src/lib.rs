@@ -721,18 +721,27 @@ impl GraphSLAMSolve {
     }
 
 
-    /// get all cones, or those matching `color`
-    #[pyo3(signature=(color=None))]
-    pub fn get_cones(&mut self, color: Option<u8>) -> Vec<[f64; 2]> {
+    /// retrieve cones by index, color, or both.
+    /// Indexing is performed first, so indices are
+    /// always consistent and function as cone IDs.
+    /// If an invalid index is passed, NANs are given.
+    #[pyo3(signature=(indices=None, color=None))]
+    pub fn get_cones(&mut self, indices: Option<Vec<usize>>, color: Option<u8>) -> Vec<[f64; 2]> {
+        let cones = match indices {
+            Some(v) => v.iter().map(|x| if (*x < self.lhat.len()) { self.lhat[*x] } else {[f64::NAN, f64::NAN]}).collect(),
+            None => self.lhat.clone(),
+        };
         match color {
-            Some(c) => self.lhat.iter()
+            Some(c) => cones.iter()
                 .zip(self.color.iter())
                 .filter(|x| *x.1==c)
                 .map(|x| *x.0)
                 .collect(),
-           None => self.lhat.clone()
+            None => cones
         }
     }
+    
+
     /// get all past x positions
     pub fn get_positions(&self) -> Vec<[f64; 2]> {
         self.xhat.clone()
